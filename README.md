@@ -18,6 +18,7 @@ output: <task>_output.json  (schema-valid resized design)
 Both the JSON and the PNG are what get evaluated — see `RULES.md`.
 
 
+
 ## Repo layout
 
 ```
