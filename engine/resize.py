@@ -6,6 +6,7 @@ the Dockerfile) is plumbing so you can focus on exactly one function:
 `resize()`. See RULES.md and the design schema for the full contract.
 """
 
+from copy import deepcopy
 from typing import Any
 
 
@@ -38,38 +39,47 @@ def resize(source: dict[str, Any], target_canvas: dict[str, Any]) -> dict[str, A
           "Adaptive typography and copy").
         - Nothing should end up outside `target_canvas`'s bounds.
 
-    This is where your actual approach goes: constraint solving, a learned
-    layout model, heuristics, whatever you choose. Latency is not a scoring
-    concern (see RULES.md) — spend your effort on quality, not speed.
+    Level 1 approach: scale the source composition proportionally and
+    center it on the target canvas, with full-canvas backgrounds filling
+    the target. This preserves the layout rather than reflowing it.
     """
 
-    # ------------------------------------------------------------------
-    # Naive baseline so this file runs out of the box. This is a uniform
-    # stretch — literally the thing the brief tells you NOT to do ("a
-    # naive program stretches the picture; a good one moves the
-    # furniture"). It's here so `python -m engine.main` produces valid,
-    # schema-correct output on day one. Replace the body of this function;
-    # do not just tune these three lines.
-    # ------------------------------------------------------------------
-    scale_x = target_canvas["width"] / source["canvas"]["width"]
-    scale_y = target_canvas["height"] / source["canvas"]["height"]
+    source_width = source["canvas"]["width"]
+    source_height = source["canvas"]["height"]
+    target_width = target_canvas["width"]
+    target_height = target_canvas["height"]
+    scale = min(target_width / source_width, target_height / source_height)
+    offset_x = (target_width - source_width * scale) / 2
+    offset_y = (target_height - source_height * scale) / 2
 
-    out_elements = []
-    for el in source["elements"]:
-        el = dict(el)  # shallow copy — don't mutate the input
-        el["x"] = el["x"] * scale_x
-        el["y"] = el["y"] * scale_y
-        el["width"] = el["width"] * scale_x
-        el["height"] = el["height"] * scale_y
+    out_elements = deepcopy(source["elements"])
+    for el in out_elements:
+        # Only non-text elements covering the source canvas are backgrounds.
+        is_background = (
+            el["type"] in ("image", "shape")
+            and el["x"] == 0
+            and el["y"] == 0
+            and el["width"] == source_width
+            and el["height"] == source_height
+        )
+        if is_background:
+            el["x"], el["y"] = 0, 0
+            el["width"], el["height"] = target_width, target_height
+            if el["type"] == "image":
+                el["fit"] = "cover"
+        else:
+            el["x"] = el["x"] * scale + offset_x
+            el["y"] = el["y"] * scale + offset_y
+            el["width"] *= scale
+            el["height"] *= scale
+
         if el["type"] == "text":
-            # font_size scaling isn't required to be uniform — this is
-            # just a starting point. Floored at 1px: the schema requires
-            # font_size >= 1, and an extreme downscale (e.g. a tall poster
-            # squeezed into a short banner) can otherwise compute < 1.
-            el["font_size"] = max(1.0, el["font_size"] * min(scale_x, scale_y))
-        out_elements.append(el)
+            el["font_size"] = max(1.0, el["font_size"] * scale)
+        for field in ("corner_radius", "stroke_width", "letter_spacing"):
+            if field in el:
+                el[field] *= scale
 
     return {
-        "canvas": {"width": target_canvas["width"], "height": target_canvas["height"]},
+        "canvas": {"width": target_width, "height": target_height},
         "elements": out_elements,
     }
