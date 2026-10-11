@@ -47,12 +47,28 @@ This processes every `*.json` file in `input/` (the 3 sample designs are
 already there — one per difficulty level) and writes an `_output.json` and
 `_output.png` for each into `output/`.
 
-The included baseline is a **uniform stretch** — deliberately the wrong
-approach (see the main brief: "a naive program stretches the picture; a
-good one moves the furniture"). It's there so the pipeline runs on day
-one. Run it once, look at `output/*_output.png`, and you'll see exactly
-why it's not good enough — that's the point. Replace the body of
-`resize()` in `engine/resize.py`, not just its constants.
+The engine preserves the **Level 1 proportional layout** for simple designs
+resized to nearby aspect ratios: foreground elements scale uniformly and
+remain centered, while backgrounds fill the canvas.
+
+For **Level 2**, it evaluates horizontal, vertical, and balanced layouts.
+Grouped pieces move together, foreground images retain their proportions,
+and text fits using the renderer's local brand fonts and wrapping rules.
+Low-opacity decorative shapes keep their layering and are brought inside
+the target. Candidate selection favors readable text, hierarchy, prominent
+imagery, canvas usage, and source ordering. It uses no network or model at
+runtime and never changes copy, font families, or image assets.
+
+The layout rules use geometry and grouping, rather than sample IDs or target
+resolutions. Extremely small targets use a best-effort proportional fallback;
+text may be tiny or unable to fit, and foreground collisions may remain.
+Level 3 optimization is not included.
+
+Run the regression suite with the installed renderer dependencies:
+
+```bash
+python -m unittest discover -s tests -v
+```
 
 ## What the self-check does (and doesn't do)
 
@@ -63,9 +79,9 @@ you waste a submission on them. See `RULES.md` for what's actually
 checked and graded.
 
 A self-check warning does not fail the run — your JSON and PNG are still
-written either way. Read the warning; decide whether it's a real problem
-or, like the Level 2 sample's intentionally corner-bleeding decorative
-circle, an expected one.
+written either way. Read any warning before accepting an output. The Level 2
+engine brings the sample's intentionally corner-bleeding decorative circle
+inside the target, so its resized output should not produce that warning.
 
 ## The renderer
 
