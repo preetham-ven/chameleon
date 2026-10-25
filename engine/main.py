@@ -11,12 +11,13 @@ challenges: drop task files in, get one JSON + one PNG out per task, no
 manual steps in between.
 """
 
+from collections import Counter
 import json
 import sys
 import time
 from pathlib import Path
 
-from engine.resize import resize
+from engine.resize import layout_warnings, resize
 
 # Relative to the current working directory, which is /app both inside the
 # Docker image (WORKDIR /app) and when run locally from this repo's root -
@@ -50,6 +51,8 @@ def self_check(source: dict, output: dict) -> list[str]:
             f"element id mismatch — missing {sorted(src_ids - out_ids)}, "
             f"unexpected {sorted(out_ids - src_ids)}"
         )
+    if Counter(el["id"] for el in source["elements"]) != Counter(el.get("id") for el in output["elements"]):
+        problems.append("element counts differ; every source id must occur exactly once")
 
     cw, ch = output["canvas"].get("width"), output["canvas"].get("height")
     for el in output["elements"]:
@@ -68,7 +71,7 @@ def self_check(source: dict, output: dict) -> list[str]:
     return problems
 
 
-def render_to_png(design: dict, assets_dir: Path, png_path: Path) -> None:
+def render_to_png(design: dict, assets_dir: Path, png_path: Path) -> list[str]:
     """Renders `design` to a PNG. Prefers the real renderer
     (transformer-convertor, wrapping cr-renderer) if it's vendored into
     ./renderer; falls back to a plain box-and-label preview otherwise so
@@ -77,12 +80,12 @@ def render_to_png(design: dict, assets_dir: Path, png_path: Path) -> None:
     real preview."""
     try:
         from renderer.converter.convert import render_design_to_png  # type: ignore
-        render_design_to_png(design, assets_dir, str(png_path))
-        return
-    except ImportError:
-        pass
+        return render_design_to_png(design, assets_dir, str(png_path))
+    except ImportError as error:
+        warning = f"Real renderer unavailable ({error}); wrote a box-and-label placeholder."
 
     _fallback_render(design, png_path)
+    return [warning]
 
 
 def _fallback_render(design: dict, png_path: Path) -> None:
@@ -121,12 +124,12 @@ def main() -> int:
         output = resize(source, target_canvas)
         elapsed = time.time() - t0
 
-        problems = self_check(source, output)
+        problems = self_check(source, output) + layout_warnings(source, output)
         stem = task_path.stem
         (OUTPUT_DIR / f"{stem}_output.json").write_text(json.dumps(output, indent=2))
-        render_to_png(output, ASSETS_DIR, OUTPUT_DIR / f"{stem}_output.png")
+        problems.extend(render_to_png(output, ASSETS_DIR, OUTPUT_DIR / f"{stem}_output.png"))
 
-        status = "OK" if not problems else f"{len(problems)} self-check warning(s)"
+        status = "OK" if not problems else f"{len(problems)} warning(s)"
         print(f"[{task_path.name}] {status} in {elapsed:.2f}s "
               f"-> {stem}_output.json, {stem}_output.png")
         for p in problems:

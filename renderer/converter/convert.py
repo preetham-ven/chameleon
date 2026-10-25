@@ -21,20 +21,17 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from PIL import Image
 
 from cr_renderer import CrelloV5Renderer
-from cr_renderer.fonts import FONT_WEIGHTS
 
 from .assets import asset_path, load_asset_image
 from .brand_fonts import load_brand_font_manager
-from .colorutil import parse_rgba
 from .features_stub import make_stub_features
 from .shapes import render_shape, shape_fill_alpha
-from .wrap import char_widths, wrap_text
+from .textlayout import measure_text, text_styles
 
 logger = logging.getLogger(__name__)
 
 _BLANK_IMAGE = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
 _DEFAULT_LINE_HEIGHT = 1.2
-_BOLD_WEIGHTS = {"bold", "semibold", "extrabold", "black"}
 
 
 def convert_chameleon_to_crello(
@@ -145,48 +142,17 @@ def _append_blank_text(out: Dict[str, Any]) -> None:
     out["text_line"].append([])
 
 
-def _is_italic(value: Optional[Union[str, bool]]) -> bool:
-    """Accepts either the v0.9 schema's `font_style: "normal"/"italic"` or a
-    plain boolean `italic` flag, for flexibility across schema revisions."""
-    if isinstance(value, bool):
-        return value
-    return value == "italic"
-
-
 def _append_text(out: Dict[str, Any], element: Dict[str, Any], font_manager) -> None:
     content = str(element.get("content", ""))
     family = element.get("font_family", "Montserrat")
     size = float(element.get("font_size", 24))
-    weight = _normalize_weight(element.get("font_weight"))
-    is_bold = weight in _BOLD_WEIGHTS
-    is_italic = _is_italic(element.get("font_style") or element.get("italic"))
-    style = _weight_style_to_font_style(is_bold, is_italic)
-
-    widths = char_widths(font_manager, family, weight, style, size, content)
-    wrapped = wrap_text(content, widths, float(element.get("width", 1.0)))
+    wrapped = measure_text(element, font_manager).wrapped
     n = len(wrapped)
 
-    default_color = element.get("color", "rgba(0,0,0,1)")
-    bold_flags = [weight in _BOLD_WEIGHTS] * n
-    italic_flags = [style in ("italic", "bolditalic")] * n
-    colors = [default_color] * n
-
-    for run in element.get("style_runs") or []:
-        start = max(0, int(run.get("start", 0)))
-        end = min(n - 1, int(run.get("end", n - 1)))
-        if start > end:
-            continue
-        if "color" in run:
-            for i in range(start, end + 1):
-                colors[i] = run["color"]
-        if "font_weight" in run:
-            run_bold = _normalize_weight(run.get("font_weight")) in _BOLD_WEIGHTS
-            for i in range(start, end + 1):
-                bold_flags[i] = run_bold
-        if "font_style" in run or "italic" in run:
-            run_italic = _is_italic(run.get("font_style") or run.get("italic"))
-            for i in range(start, end + 1):
-                italic_flags[i] = run_italic
+    styles = text_styles(element)
+    bold_flags = [s[0] for s in styles]
+    italic_flags = [s[1] for s in styles]
+    colors = [s[2] for s in styles]
 
     text_line = list(accumulate(int(c == "\n") for c in wrapped))
 
@@ -201,29 +167,6 @@ def _append_text(out: Dict[str, Any], element: Dict[str, Any], font_manager) -> 
     out["font_italic"].append(italic_flags)
     out["text_color"].append(colors)
     out["text_line"].append(text_line)
-
-
-def _normalize_weight(weight: Optional[str]) -> str:
-    if not weight:
-        return "regular"
-    weight = weight.lower()
-    return weight if weight in FONT_WEIGHTS else "regular"
-
-
-def _weight_style_to_font_style(is_bold: bool, is_italic: bool) -> str:
-    """Mirror cr_renderer.text_utils.make_text_blob's own weight/style
-    derivation, so the font used to *measure* wrap widths matches the font
-    that will actually be *rendered* (cr-renderer recomputes this itself at
-    render time from the bold/italic per-character maps - if this measuring
-    step used a different rule, it would just cause wrap widths to be
-    measured against the wrong font)."""
-    if is_bold and is_italic:
-        return "bolditalic"
-    if is_bold:
-        return "bold"
-    if is_italic:
-        return "italic"
-    return "regular"
 
 
 # --------------------------------------------------------------------------

@@ -49,26 +49,56 @@ already there — one per difficulty level) and writes an `_output.json` and
 
 The engine preserves the **Level 1 proportional layout** for simple designs
 resized to nearby aspect ratios: foreground elements scale uniformly and
-remain centered, while backgrounds fill the canvas.
+remain centered, while backgrounds fill the canvas. Complex nearby resizes
+also retain their composition when it remains readable and collision-free;
+simple label groups can still be compacted and centered.
 
-For **Level 2**, it evaluates horizontal, vertical, and balanced layouts.
-Grouped pieces move together, foreground images retain their proportions,
-and text fits using the renderer's local brand fonts and wrapping rules.
-Low-opacity decorative shapes keep their layering and are brought inside
-the target. Candidate selection favors readable text, hierarchy, prominent
-imagery, canvas usage, and source ordering. It uses no network or model at
-runtime and never changes copy, font families, or image assets.
+For **Level 2**, it compares proportional, horizontal, vertical, grid,
+featured-image, and image-panel layouts. A featured-image layout requires a
+clearly dominant source image; comparable images can share a row or grid.
+The engine reads transparent image bounds to judge visible prominence while
+keeping the full image boxes on-canvas. It never crops away transparent padding
+or modifies asset pixels.
+
+Complex and rotated groups retain their internal geometry. Simple unrotated
+rectangle-and-label groups can become more compact, with their lettering
+centered vertically using real glyph bounds. Text uses local brand fonts,
+style runs, letter spacing, wrapping, and line limits. The engine checks text
+against both the corrected local converter and the original converter's
+wrapping/style-range behavior. The shared measurements live in
+`renderer/converter/textlayout.py`.
+
+Low-opacity decorative shapes retain their layering and are brought inside
+the target. Candidate selection balances readability, source hierarchy,
+visible image prominence, spacing, and source ordering. It uses no network
+or model at runtime and never changes copy, font families, or image assets.
 
 The layout rules use geometry and grouping, rather than sample IDs or target
 resolutions. Extremely small targets use a best-effort proportional fallback;
 text may be tiny or unable to fit, and foreground collisions may remain.
 Level 3 optimization is not included.
 
-Run the regression suite with the installed renderer dependencies:
+Run the local regression suite with the installed renderer dependencies.
+These are our regression tests, not the challenge's official evaluator:
 
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+The suite includes independently constructed image-heavy and text-heavy
+designs across six target sizes, rendered-pixel text-fit and button-centering
+checks, complex groups, rotations, styled copy, and offline rendering.
+
+Generate previews of the Level 2 sample and the independent designs for
+manual visual review:
+
+```bash
+python -m tests.preview_layouts
+open output/review/level2_comparison.png
+```
+
+The sheet shows each source alongside its wide, square, and portrait results.
+Individual previews and JSONs also appear in `output/review/`.
 
 ## What the self-check does (and doesn't do)
 
@@ -78,8 +108,10 @@ is not the official scorer.** It exists to catch obvious mistakes before
 you waste a submission on them. See `RULES.md` for what's actually
 checked and graded.
 
-A self-check warning does not fail the run — your JSON and PNG are still
-written either way. Read any warning before accepting an output. The Level 2
+A warning does not fail the run — your JSON and PNG are still written either
+way. Warnings now include text that cannot fit, fonts below the soft 12 px
+readability floor, foreground collisions, and missing renderer assets. Read
+any warning before accepting an output. The Level 2
 engine brings the sample's intentionally corner-bleeding decorative circle
 inside the target, so its resized output should not produce that warning.
 
@@ -92,7 +124,7 @@ fonts/assets from `brand_kit/` and writes a real rendered preview, not a
 placeholder. If you ever see plain labeled boxes instead of real text and
 images in `output/*.png`, that means the import in `main.py` failed (e.g.
 `cr-renderer` didn't install — check `requirements.txt` installed cleanly)
-and it silently fell back to the box-and-label placeholder; don't judge
+and it fell back to the box-and-label placeholder with a warning; don't judge
 your layout quality by that fallback.
 
 ## Docker (how you'll actually be run)
