@@ -167,6 +167,8 @@ def _visible_bounds(el):
 
 def _image_area(el):
     # Rotation increases an axis-aligned envelope, not the amount of artwork.
+    if not (ROOT / "brand_kit" / "assets" / el["asset_id"]).is_file():
+        return 0  # A missing asset must survive, but cannot earn image prominence.
     _, _, w, h = _visible_bounds({**el, "rotation": 0})
     return w * h
 
@@ -236,7 +238,16 @@ def _text_fits(el, size):
     return True
 
 
-def _fit_font(el, maximum):
+def _fit_font(el, maximum, integer_search=False):
+    if integer_search:
+        # Wrap changes and glyph overhang can make a smaller size fail even
+        # when a larger size fits. Scan actual rendered sizes for compact text.
+        for size in [max(1.0, maximum), *range(int(maximum), 0, -1)]:
+            if _text_fits(el, size):
+                el["font_size"] = size
+                return
+        el["font_size"] = 1.0
+        return
     low, high = 1.0, max(1.0, maximum)
     for _ in range(12):
         mid = (low + high) / 2
@@ -258,12 +269,12 @@ def _scale_member(el, scale, dx, dy):
         el["font_size"] = max(1.0, el["font_size"])
 
 
-def _place(unit, elements, region, type_scale):
+def _place(unit, elements, region, type_scale, integer_search=False):
     x, y, w, h = region
     ux, uy, uw, uh = unit.bounds
     button = _button_members(unit, elements)
     if button:
-        _place_button(button, elements, region, type_scale)
+        _place_button(button, elements, region, type_scale, integer_search)
         return
     if len(unit.indices) == 1:
         el = elements[unit.indices[0]]
@@ -272,7 +283,7 @@ def _place(unit, elements, region, type_scale):
             el.update(x=x, y=y, width=w, height=h)
             if "letter_spacing" in el:
                 el["letter_spacing"] *= type_scale
-            _fit_font(el, original_size * type_scale)
+            _fit_font(el, original_size * type_scale, integer_search)
             layout = _measure(el)
             el["height"] = min(h, max(layout.height, _measure(el, legacy=True).height))
             # Center the ink when there is room, while retaining the full box.
@@ -284,10 +295,10 @@ def _place(unit, elements, region, type_scale):
     for i in unit.indices:
         _scale_member(elements[i], scale, dx, dy)
         if elements[i]["type"] == "text":
-            _fit_font(elements[i], elements[i]["font_size"])
+            _fit_font(elements[i], elements[i]["font_size"], integer_search)
 
 
-def _place_button(members, elements, region, type_scale):
+def _place_button(members, elements, region, type_scale, integer_search=False):
     x, y, w, h = region
     bg, label = (elements[i] for i in members)
     radius_ratio = bg.get("corner_radius", 0) / max(1, min(bg["width"], bg["height"]))
@@ -301,11 +312,24 @@ def _place_button(members, elements, region, type_scale):
     label.update(width=max(0, w - 2 * pad_x), height=max(0, h - 2 * pad_y))
     if "letter_spacing" in label:
         label["letter_spacing"] *= type_scale
-    _fit_font(label, preferred)
+    _fit_font(label, preferred, integer_search)
     layouts = [_measure(label, legacy=legacy) for legacy in (False, True)]
     text_width = max(max(m.width, m.ink[2] - m.ink[0]) for m in layouts)
     text_height = max(m.height for m in layouts)
-    bw, bh = min(w, text_width + 2 * pad_x + 1), min(h, text_height + 2 * pad_y)
+    bw = min(w, text_width + 2 * pad_x + 1)
+    if integer_search:
+        label["width"] = max(0, bw - 2 * pad_x)
+        compact_layouts = [_measure(label, legacy=legacy) for legacy in (False, True)]
+        # The original greedy wrapper may move an earlier space when a box
+        # becomes narrower. Retain the measured width if shrinking adds lines.
+        if any(new.wrapped.count("\n") > old.wrapped.count("\n")
+               or max(new.width, new.ink[2] - new.ink[0]) > label["width"] + 1e-6
+               for old, new in zip(layouts, compact_layouts)):
+            bw = w
+            label["width"] = max(0, w - 2 * pad_x)
+            compact_layouts = [_measure(label, legacy=legacy) for legacy in (False, True)]
+        text_height = max(m.height for m in compact_layouts)
+    bh = min(h, text_height + 2 * pad_y)
     bx, by = x + (w - bw) / 2, y + (h - bh) / 2
     bg.update(x=bx, y=by, width=bw, height=bh)
     if "corner_radius" in bg:
@@ -417,6 +441,8 @@ def _finish(source, target, elements, backgrounds, decorations):
         el.update(x=0, y=0, width=target["width"], height=target["height"])
         if el["type"] == "image":
             el["fit"] = "cover"
+        if el.get("rotation", 0):
+            _clamp_unit([i], elements, target)
     scale = min(target["width"] / source["canvas"]["width"], target["height"] / source["canvas"]["height"])
     for i in decorations:
         original = source["elements"][i]
@@ -467,8 +493,8 @@ def layout_warnings(source, output):
         if el["type"] == "text":
             if not _text_fits(el, el["font_size"]):
                 warnings.append(f"text '{el['id']}' does not fit its box or line limit")
-            if el["font_size"] < READABLE_FONT:
-                warnings.append(f"text '{el['id']}' is small ({el['font_size']:.1f}px)")
+            if int(el["font_size"]) < READABLE_FONT:
+                warnings.append(f"text '{el['id']}' is small ({int(el['font_size'])}px rendered)")
     units = _composition(source)[2]
     boxes = [_bounds([output["elements"][i] for i in u.indices]) for u in units]
     if any(_overlap(a, b) for i, a in enumerate(boxes) for b in boxes[i + 1:]):
@@ -491,12 +517,12 @@ def _rank(source, output, units):
     prominence, total_weight, image_scales = 0, 0, []
     for original, result in images:
         source_area, target_area = _image_area(original), _image_area(result)
-        weight = sqrt(max(1, source_area))
+        weight = sqrt(source_area)
         prominence += weight * min(1, target_area / max(1, source_area * area_scale))
         total_weight += weight
         if source_area > 0 and target_area > 0:
             image_scales.append(sqrt(target_area / source_area))
-    prominence = prominence / total_weight if images else 1
+    prominence = prominence / total_weight if total_weight else 1
     image_hierarchy = min(image_scales) / max(image_scales) if image_scales else 1
     hierarchy = ((text_hierarchy + image_hierarchy) / 2 if text and images
                  else text_hierarchy if text else image_hierarchy)
@@ -575,6 +601,223 @@ def _candidate_elements(source, target, units):
                     elements = deepcopy(source["elements"])
                     _grid(units, elements, (margin, margin, w, h), gap, type_scale, columns)
                     yield elements
+            if images and not other:
+                elements = deepcopy(source["elements"])
+                _image_panel(images, elements, (margin, margin, w, h), gap, type_scale)
+                yield elements
+
+
+@dataclass
+class _SizedUnit:
+    unit: _Unit
+    width: float
+    height: float
+    type_scale: float
+    members: list[dict] | None = None
+
+
+def _minimum_font(output):
+    """Use the actual integer size drawn by cr-renderer, ignoring empty copy."""
+    return min((int(e["font_size"]) for e in output["elements"]
+                if e["type"] == "text" and e["content"].strip()), default=int(READABLE_FONT))
+
+
+def _compact_scale(unit, elements, floor, reference):
+    fonts = [elements[i]["font_size"] for i in unit.indices
+             if elements[i]["type"] == "text" and elements[i]["content"].strip()]
+    if not fonts:
+        return 1.0
+    smallest = min(fonts)
+    # Compress the hierarchy on dense canvases while keeping larger text larger.
+    # A small epsilon survives binary fitting without rounding a 6px goal to 5px.
+    preferred = floor * min(3, sqrt(smallest / reference)) + 0.02
+    return preferred / smallest
+
+
+def _compact_item(unit, source, floor, reference, region, image_scale):
+    elements = source["elements"]
+    _, _, max_w, max_h = region
+    short = min(max_w, max_h)
+    type_scale = _compact_scale(unit, elements, floor, reference)
+    members = None
+    angle = elements[unit.indices[0]].get("rotation", 0)
+    common_rotation = angle and all(elements[i].get("rotation", 0) == angle for i in unit.indices)
+    trial = list(elements)
+    for i in unit.indices:
+        trial[i] = deepcopy(elements[i])
+        if common_rotation:
+            trial[i]["rotation"] = 0
+    button = _button_members(unit, trial)
+    if button:
+        # A rotated pill can lose excess padding while retaining its angle.
+        # Other rotated/complex groups remain rigid, uniformly scaled units.
+        factor = abs(cos(radians(angle))) + abs(sin(radians(angle)))
+        _place_button(button, trial, (0, 0, max_w / factor, max_h / factor), type_scale, integer_search=True)
+        bg = trial[button[0]]
+        cx, cy = bg["x"] + bg["width"] / 2, bg["y"] + bg["height"] / 2
+        for i in unit.indices:
+            el = trial[i]
+            dx, dy = el["x"] + el["width"] / 2 - cx, el["y"] + el["height"] / 2 - cy
+            el["x"] = cx + dx * cos(radians(angle)) - dy * sin(radians(angle)) - el["width"] / 2
+            el["y"] = cy + dx * sin(radians(angle)) + dy * cos(radians(angle)) - el["height"] / 2
+            el["rotation"] = elements[i].get("rotation", 0)
+            if "rotation" not in elements[i]:
+                el.pop("rotation", None)
+        x, y, w, h = _bounds([trial[i] for i in unit.indices])
+        members = [trial[i] for i in unit.indices]
+        for el in members:
+            el["x"] -= x
+            el["y"] -= y
+    else:
+        _, _, w, h = unit.bounds
+        fonts = [elements[i]["font_size"] for i in unit.indices if elements[i]["type"] == "text"]
+        if fonts:
+            scale = type_scale
+        else:
+            missing = unit.image and not any(_image_area(elements[i]) for i in unit.indices)
+            edge = short * (0.30 if missing else image_scale)
+            scale = min(edge / max(w, h, 1), max_w / max(w, 1), max_h / max(h, 1))
+        w, h = w * scale, h * scale
+    return _SizedUnit(unit, max(1, w), max(1, h), type_scale, members)
+
+
+def _place_sized(items, regions, elements, dx=0, dy=0):
+    for item, (x, y, w, h) in zip(items, regions):
+        if item.members is None:
+            _place(item.unit, elements, (x + dx, y + dy, w, h), item.type_scale, integer_search=True)
+        else:
+            for index, member in zip(item.unit.indices, item.members):
+                elements[index] = {**member, "x": member["x"] + x + dx,
+                                   "y": member["y"] + y + dy}
+
+
+def _compact_paragraphs(units, source, region, gap, floor, reference, columns):
+    """Measure blocks before balancing their ordered sequence into columns."""
+    from engine.packing import balanced_columns
+    x, y, w, h = region
+    cw = (w - gap * (columns - 1)) / columns
+    if cw <= 0 or h <= 0:
+        return None
+    def measure(unit, boost):
+        original = source["elements"][unit.indices[0]]
+        el = {**original, "width": cw, "height": h}
+        preferred = original["font_size"] * _compact_scale(unit, source["elements"], floor, reference)
+        size = floor + 0.02 + boost * (preferred - floor - 0.02)
+        if "letter_spacing" in el:
+            el["letter_spacing"] *= size / original["font_size"]
+        _fit_font(el, size, integer_search=True)
+        if int(el["font_size"]) < floor or not _text_fits(el, el["font_size"]):
+            return None
+        height = max(_measure(el, legacy=legacy).height for legacy in (False, True))
+        return _SizedUnit(unit, cw, height, el["font_size"] / original["font_size"])
+
+    minimum = [measure(unit, 0) for unit in units]
+    if any(item is None for item in minimum):
+        return None
+    ranges, height = balanced_columns([item.height for item in minimum], columns, gap)
+    if height > h + 1e-6:
+        return None
+    items, regions = [], []
+    for col, (start, end) in enumerate(ranges):
+        chosen, low, high = minimum[start:end], 0, 1
+        for _ in range(8):
+            boost = (low + high) / 2
+            trial = [measure(unit, boost) for unit in units[start:end]]
+            if (all(item is not None for item in trial)
+                    and sum(item.height for item in trial) + gap * (end - start - 1) <= h + 1e-6):
+                chosen, low = trial, boost
+            else:
+                high = boost
+        items.extend(chosen)
+        column_h = sum(item.height for item in chosen) + gap * (end - start - 1)
+        cy = y + (h - column_h) / 2
+        for item in chosen:
+            regions.append((x + col * (cw + gap), cy, cw, item.height))
+            cy += item.height + gap
+    return items, regions
+
+
+def _compact_candidates(source, target, backgrounds, decorations, units, spacing=1.0):
+    """Find the largest common readable size using measured compact layouts.
+
+    Paragraphs occupy reading columns. Labels wrap into rows. Images and rigid
+    groups pack into a side/top rail. Search depends on geometry and content
+    demand, never task IDs, difficulty labels, or a catalogue of resolutions.
+    """
+    from engine.packing import flow_rows, pack_rectangles
+    texts = [e["font_size"] for e in source["elements"] if e["type"] == "text" and e["content"].strip()]
+    if not texts:
+        return []
+    reference = min(texts)
+    paragraphs = [u for u in units if len(u.indices) == 1
+                  and source["elements"][u.indices[0]]["type"] == "text"
+                  and not source["elements"][u.indices[0]].get("rotation", 0)]
+    supporting = [u for u in units if u not in paragraphs]
+    images = [u for u in supporting if u.image]
+    labels = [u for u in supporting if _button_members(u, source["elements"])]
+    rigid = [u for u in supporting if u not in images and u not in labels]
+    short = min(target.values())
+    margin, gap = min(8, short * 0.025) * spacing, min(6, short * 0.02) * spacing
+    w, h = target["width"] - 2 * margin, target["height"] - 2 * margin
+    if w <= 0 or h <= 0:
+        return []
+    orientation = "side" if w >= h else "top"
+    paragraph_cache = {}
+    for floor in range(int(READABLE_FONT), 0, -1):
+        feasible = []
+        # Try rigid groups in the rail as well as alongside the label rows.
+        for rigid_in_rail in (True, False):
+            rail_units = images + (rigid if rigid_in_rail else [])
+            row_units = labels + ([] if rigid_in_rail else rigid)
+            row_units.sort(key=lambda u: (u.bounds[1], u.bounds[0]))
+            fractions = (0.18, 0.28, 0.38) if rail_units else (0,)
+            for fraction in fractions:
+                for reverse in ((False, True) if rail_units else (False,)):
+                    rail, body = (0, 0, w, h), (margin, margin, w, h)
+                    if rail_units and orientation == "side":
+                        rw = w * fraction
+                        rail = (margin + (w - rw if reverse else 0), margin, rw, h)
+                        body = (margin + (0 if reverse else rw + gap), margin, w - rw - gap, h)
+                    elif rail_units:
+                        rh = h * fraction
+                        rail = (margin, margin + (h - rh if reverse else 0), w, rh)
+                        body = (margin, margin + (0 if reverse else rh + gap), w, h - rh - gap)
+                    bx, by, bw, bh = body
+                    for image_scale in ((0.9, 0.65) if images else (0.9,)):
+                        rail_items = [_compact_item(u, source, floor, reference, rail, image_scale) for u in rail_units]
+                        row_items = [_compact_item(u, source, floor, reference, body, image_scale) for u in row_units]
+                        rows = flow_rows([(i.width, i.height) for i in row_items], bw, gap)
+                        if rows is None:
+                            continue
+                        row_regions, row_h = rows
+                        text_h = bh - row_h - (gap if paragraphs and row_items else 0)
+                        if text_h < 0:
+                            continue
+                        column_counts = range(1, min(3, len(paragraphs)) + 1) if paragraphs else (0,)
+                        for columns in column_counts:
+                            key = (floor, bw, text_h, columns)
+                            if key not in paragraph_cache:
+                                paragraph_cache[key] = _compact_paragraphs(
+                                    paragraphs, source, (0, 0, bw, text_h), gap, floor,
+                                    reference, columns) if paragraphs else ([], [])
+                            copy_layout = paragraph_cache[key]
+                            if copy_layout is None:
+                                continue
+                            for vertical_first in ((True, False) if rail_items else (True,)):
+                                rail_regions = pack_rectangles([(i.width, i.height) for i in rail_items],
+                                                               rail, gap, vertical_first)
+                                if rail_regions is None:
+                                    continue
+                                elements = deepcopy(source["elements"])
+                                _place_sized(rail_items, rail_regions, elements)
+                                _place_sized(row_items, row_regions, elements, bx, by + bh - row_h)
+                                _place_sized(copy_layout[0], copy_layout[1], elements, bx, by)
+                                output = _finish(source, target, elements, backgrounds, decorations)
+                                if _minimum_font(output) >= floor and _valid(source, output, units):
+                                    feasible.append(output)
+        if feasible:
+            return feasible  # Lower floors cannot beat this floor's minimum size.
+    return []
 
 
 def resize(source: dict[str, Any], target_canvas: dict[str, Any]) -> dict[str, Any]:
@@ -614,8 +857,16 @@ def resize(source: dict[str, Any], target_canvas: dict[str, Any]) -> dict[str, A
         output = _finish(source, target_canvas, elements, backgrounds, decorations)
         if _valid(source, output, units):
             candidates.append(output)
-    if candidates:
-        return max(candidates, key=lambda output: _rank(source, output, units))
+    best = max(candidates, key=lambda output: _rank(source, output, units)) if candidates else None
+    if best is None or _minimum_font(best) < READABLE_FONT:
+        compact = []
+        for spacing in (1.0, 0.5):
+            compact.extend(_compact_candidates(source, target_canvas, backgrounds, decorations, units, spacing))
+        if compact:
+            best = max(([best] if best else []) + compact,
+                       key=lambda output: (_minimum_font(output), _rank(source, output, units)))
+    if best is not None:
+        return best
     # Best-effort fallback preserves every unit even for infeasible tiny targets.
     for unit in units:
         _clamp_unit(unit.indices, baseline["elements"], target_canvas)

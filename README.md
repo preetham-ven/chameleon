@@ -1,8 +1,8 @@
 # CHAMELEON — starter repo
 
-This is the scaffolding for your engine. It handles input loading, output
-writing, rendering, and Docker packaging — so the only file you need to
-edit is **`engine/resize.py`**.
+This repo handles input loading, output writing, rendering, and Docker packaging.
+The layout engine lives in **`engine/resize.py`**, with small packing helpers in
+`engine/packing.py` and shared font measurements in the renderer converter.
 
 ```
 input:  a task JSON (source design + target canvas)
@@ -23,7 +23,8 @@ Both the JSON and the PNG are what get evaluated — see `RULES.md`.
 
 ```
 engine/
-  resize.py        <- implement your approach here
+  resize.py        <- layout selection, placement, and font fitting
+  packing.py       <- rectangle packing, label rows, and balanced columns
   main.py           <- orchestrator (input -> resize() -> output). Don't need to edit this.
 renderer/           <- the real renderer (transformer-convertor + cr-renderer), already vendored
 brand_kit/
@@ -60,7 +61,8 @@ The engine reads transparent image bounds to judge visible prominence while
 keeping the full image boxes on-canvas. It never crops away transparent padding
 or modifies asset pixels.
 
-Complex and rotated groups retain their internal geometry. Simple unrotated
+The standard search keeps complex and rotated groups together through uniform
+scaling. Simple unrotated
 rectangle-and-label groups can become more compact, with their lettering
 centered vertically using real glyph bounds. Text uses local brand fonts,
 style runs, letter spacing, wrapping, and line limits. The engine checks text
@@ -76,7 +78,21 @@ or model at runtime and never changes copy, font families, or image assets.
 The layout rules use geometry and grouping, rather than sample IDs or target
 resolutions. Extremely small targets use a best-effort proportional fallback;
 text may be tiny or unable to fit, and foreground collisions may remain.
-Level 3 optimization is not included.
+
+For **Level 3**, layouts whose text is still below the readability floor try
+a measured compact search. Long copy flows into ordered, balanced columns;
+variable-count badges wrap into rows; images and rigid groups pack into a side
+or top rail. Simple rotated rectangle-and-label groups can lose excess padding
+while keeping their original angle. Complex groups still scale uniformly.
+Image-only designs can use an adaptive row/grid rather than a fixed column count.
+
+The compact search checks integer readability floors from 12 px down to 1 px,
+preferring the largest minimum **rendered** text size found by its layouts,
+then applying the usual design-quality score. Missing image references survive
+and render through the existing placeholder behavior, but receive no image-
+prominence reward. No text, elements, or assets are dropped or rewritten.
+Very small canvases with long copy still require small text; warnings report
+these limitations rather than claiming that every layout is comfortably readable.
 
 Run the local regression suite with the installed renderer dependencies.
 These are our regression tests, not the challenge's official evaluator:
@@ -99,6 +115,19 @@ open output/review/level2_comparison.png
 
 The sheet shows each source alongside its wide, square, and portrait results.
 Individual previews and JSONs also appear in `output/review/`.
+
+For Level 3, generate the supplied sample plus independent dense/awkward designs
+at six extreme formats, including wide banners and narrow portrait canvases:
+
+```bash
+python -m tests.preview_advanced
+open output/level3_review/level3_comparison.png
+```
+
+`output/level3_review/report.json` records element counts, minimum rendered font
+sizes, and warnings. The regression suite also covers variable badge counts,
+larger image collections, unchanged copy, rigid groups, and actual rendered text
+under both the corrected and original converter behavior.
 
 ## What the self-check does (and doesn't do)
 

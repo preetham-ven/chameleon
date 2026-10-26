@@ -340,7 +340,7 @@ class ResizeTests(unittest.TestCase):
     def test_missing_assets_and_small_text_are_reported(self):
         from engine.main import render_to_png, self_check
         from engine.resize import layout_warnings
-        source = task(2)["source"]
+        source = task(3)["source"]
         out = resize(source, dict(width=728, height=90))
         self.assertTrue(any("small" in warning for warning in layout_warnings(source, out)))
         el = next(e for e in out["elements"] if e["type"] == "image")
