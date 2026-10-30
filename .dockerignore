@@ -1,0 +1,12 @@
+.git
+.venv
+venv
+**/__pycache__
+**/*.pyc
+.DS_Store
+output
+dist
+cr-renderer
+.agents
+.codex
+.aws

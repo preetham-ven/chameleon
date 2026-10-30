@@ -1,0 +1,7 @@
+# Run after building the production image as chameleon-submission:stage1.
+FROM chameleon-submission:stage1
+RUN pip install --no-cache-dir jsonschema==4.26.0
+COPY tests/ /app/tests/
+COPY scripts/ /app/scripts/
+COPY input/ /app/input/
+ENTRYPOINT ["python", "-m", "unittest", "discover", "-s", "tests", "-v"]

@@ -1,4 +1,9 @@
-# CHAMELEON — starter repo
+# CHAMELEON — offline layout engine
+
+Stage-one submission: a deterministic engine that rearranges existing design
+elements for a requested canvas. It runs offline without a model, API key, or
+external service. It preserves copy, font families, element IDs, and image assets.
+See [SUBMISSION.md](SUBMISSION.md) for the validation record and handoff instructions.
 
 This repo handles input loading, output writing, rendering, and Docker packaging.
 The layout engine lives in **`engine/resize.py`**, with small packing helpers in
@@ -8,7 +13,7 @@ The layout engine lives in **`engine/resize.py`**, with small packing helpers in
 input:  a task JSON (source design + target canvas)
               |
               v
-        engine/resize.py   <-- YOU IMPLEMENT THIS
+        engine/resize.py   (layout selection and fitting)
               |
               v
 output: <task>_output.json  (schema-valid resized design)
@@ -41,7 +46,9 @@ RULES.md
 ## Quick start (no Docker needed for iterating on `resize()`)
 
 ```bash
-pip install -r requirements.txt
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
 python -m engine.main
 ```
 
@@ -110,6 +117,7 @@ Run the local regression suite with the installed renderer dependencies.
 These are our regression tests, not the challenge's official evaluator:
 
 ```bash
+python -m pip install -r requirements-dev.txt
 python -m unittest discover -s tests -v
 ```
 
@@ -182,9 +190,9 @@ your layout quality by that fallback.
 
 ```bash
 docker build --platform linux/amd64 -t my-chameleon-engine .
-docker run --rm --network none \
-  -v $(pwd)/input:/app/input \
-  -v $(pwd)/output:/app/output \
+docker run --rm --platform linux/amd64 --network none \
+  -v "$(pwd)/input:/app/input:ro" \
+  -v "$(pwd)/output:/app/output" \
   my-chameleon-engine
 ```
 
@@ -192,6 +200,23 @@ docker run --rm --network none \
 engine needs must be installed at **build** time (add it to
 `requirements.txt`), not fetched at run time. If you're using a locally
 hosted model, bake its weights into the image during the build step.
+
+The base image, Pillow, Skia, and the renderer Git revision are pinned.
+`constraints.txt` records the tested Linux dependency versions.
+The final challenge PDF places the full Express add-on, pitch, and demo video
+in the finale. This package is for stage one; the older viewer requirement in
+the starter `FAQ.md` differs from the final brief.
+
+To validate a run independently and rebuild the submission archive:
+
+```bash
+python scripts/validate_outputs.py --input input --output output
+python scripts/package_submission.py
+```
+
+The validator checks the official design schema plus content, aspect ratios,
+rotated bounds, and the PNG dimensions. Install `requirements-dev.txt` to use it.
+Readability warnings remain visible even when those structural checks pass.
 
 ## See also
 
