@@ -38,6 +38,11 @@ dependency versions are pinned in `requirements.txt` and `constraints.txt`.
 
 ## Verification record
 
+Validated on October 30, 2026: all 46 local regression tests passed, and all three
+supplied sample tasks passed the schema and artifact checks in Linux/AMD64 with
+network access disabled. Level 3 retains the readability and missing-asset
+warnings described below.
+
 The archive's `examples/` folder contains the outputs produced inside the
 Linux/AMD64 container, the build/run logs, test log, and JSON validation report.
 `examples/environment.json` records the image ID, test count, network setting,

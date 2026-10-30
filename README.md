@@ -207,16 +207,26 @@ The final challenge PDF places the full Express add-on, pitch, and demo video
 in the finale. This package is for stage one; the older viewer requirement in
 the starter `FAQ.md` differs from the final brief.
 
-To validate a run independently and rebuild the submission archive:
+To validate an existing run independently:
 
 ```bash
 python scripts/validate_outputs.py --input input --output output
-python scripts/package_submission.py
 ```
 
 The validator checks the official design schema plus content, aspect ratios,
 rotated bounds, and the PNG dimensions. Install `requirements-dev.txt` to use it.
 Readability warnings remain visible even when those structural checks pass.
+
+To build and test the Docker image, then package the verified source:
+
+```bash
+python scripts/verify_submission.py
+python scripts/package_submission.py
+```
+
+The archive is written to `dist/chameleon-stage1.zip` with sample outputs and
+verification logs. Packaging requires a successful verification of the current
+source files.
 
 ## See also
 
