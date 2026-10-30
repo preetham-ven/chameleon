@@ -104,24 +104,28 @@ python -m unittest discover -s tests -v
 The suite includes independently constructed image-heavy and text-heavy
 designs across six target sizes, rendered-pixel text-fit and button-centering
 checks, complex groups, rotations, styled copy, and offline rendering.
+Pixel tests also check native export resolution, image transparency,
+text opacity, and independent shape fill/stroke colors and opacity.
 
 Generate previews of the Level 2 sample and the independent designs for
 manual visual review:
 
 ```bash
 python -m tests.preview_layouts
-open output/review/level2_comparison.png
+open output/review/level2_comparison.html
 ```
 
-The sheet shows each source alongside its wide, square, and portrait results.
-Individual previews and JSONs also appear in `output/review/`.
+The page shows outputs at their actual pixel size with scrollbars for wide
+designs, alongside reduced source thumbnails. A PNG contact sheet, individual
+previews, and JSONs also appear in `output/review/`. The contact sheet reduces
+images to fit; use the HTML page or individual PNGs to judge readability.
 
 For Level 3, generate the supplied sample plus independent dense/awkward designs
 at six extreme formats, including wide banners and narrow portrait canvases:
 
 ```bash
 python -m tests.preview_advanced
-open output/level3_review/level3_comparison.png
+open output/level3_review/level3_comparison.html
 ```
 
 `output/level3_review/report.json` records element counts, minimum rendered font
@@ -150,7 +154,9 @@ inside the target, so its resized output should not produce that warning.
 (a vendored copy of `transformer-convertor`, wrapping `cr-renderer`) to
 produce each task's PNG — already wired in, no setup needed. It reads
 fonts/assets from `brand_kit/` and writes a real rendered preview, not a
-placeholder. If you ever see plain labeled boxes instead of real text and
+placeholder. Exports use the requested canvas dimensions, including sizes
+above 2,048 pixels; callers can explicitly request a smaller `max_size` for
+thumbnails. If you ever see plain labeled boxes instead of real text and
 images in `output/*.png`, that means the import in `main.py` failed (e.g.
 `cr-renderer` didn't install — check `requirements.txt` installed cleanly)
 and it fell back to the box-and-label placeholder with a warning; don't judge

@@ -24,8 +24,9 @@ from cr_renderer import CrelloV5Renderer
 
 from .assets import asset_path, load_asset_image
 from .brand_fonts import load_brand_font_manager
+from .colorutil import parse_rgba
 from .features_stub import make_stub_features
-from .shapes import render_shape, shape_fill_alpha
+from .shapes import render_shape
 from .textlayout import measure_text, text_styles
 
 logger = logging.getLogger(__name__)
@@ -92,12 +93,14 @@ def convert_chameleon_to_crello(
 
         if etype == "text":
             out["type"].append("TextElement")
+            # cr-renderer does not pass the opacity column to TextElement.
+            # Apply it in the character colors, exactly once.
+            out["opacity"][-1] = 1.0
             _append_text(out, element, font_manager)
             out["image"].append(_BLANK_IMAGE)
         elif etype == "shape":
             out["type"].append("ImageElement")
             _append_blank_text(out)
-            out["opacity"][-1] *= shape_fill_alpha(element)
             out["image"].append(render_shape(element))
         elif etype == "image":
             out["type"].append("ImageElement")
@@ -143,16 +146,17 @@ def _append_blank_text(out: Dict[str, Any]) -> None:
 
 
 def _append_text(out: Dict[str, Any], element: Dict[str, Any], font_manager) -> None:
-    content = str(element.get("content", ""))
     family = element.get("font_family", "Montserrat")
     size = float(element.get("font_size", 24))
     wrapped = measure_text(element, font_manager).wrapped
-    n = len(wrapped)
-
     styles = text_styles(element)
     bold_flags = [s[0] for s in styles]
     italic_flags = [s[1] for s in styles]
     colors = [s[2] for s in styles]
+    opacity = float(element.get("opacity", 1.0))
+    if opacity != 1:
+        colors = [f"rgba({r},{g},{b},{a * opacity})"
+                  for r, g, b, a in map(parse_rgba, colors)]
 
     text_line = list(accumulate(int(c == "\n") for c in wrapped))
 
@@ -204,12 +208,14 @@ def render_design_to_png(
     `brand_kit/assets` + `brand_kit/fonts`), matching this repo's layout.
     Returns the list of conversion warnings (missing assets, unknown
     element types, etc.) for the caller to log.
+    Exports the full canvas resolution unless max_size explicitly limits it.
     """
     assets_dir = str(assets_dir)
     fonts_dir = str(fonts_dir) if fonts_dir is not None else str(Path(assets_dir).parent / "fonts")
 
     renderer = _get_renderer(fonts_dir)
     example, warnings = convert_chameleon_to_crello(design, renderer.font_manager, assets_dir)
-    image_bytes = renderer.render(example, max_size=max_size or 2048, format="png")
+    render_size = max_size if max_size is not None else max(example["canvas_width"], example["canvas_height"])
+    image_bytes = renderer.render(example, max_size=render_size, format="png")
     Path(png_path).write_bytes(image_bytes)
     return warnings

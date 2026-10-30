@@ -53,7 +53,9 @@ def _fit_image(image: Image.Image, width: float, height: float, fit: str) -> Ima
         nw, nh = max(1, round(image.width * scale)), max(1, round(image.height * scale))
         resized = image.resize((nw, nh), Image.LANCZOS)
         canvas = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        canvas.paste(resized, ((w - nw) // 2, (h - nh) // 2), resized)
+        # Copy RGBA values directly. Using the image as its own mask would
+        # multiply alpha twice and darken partially transparent asset pixels.
+        canvas.paste(resized, ((w - nw) // 2, (h - nh) // 2))
         return canvas
     if fit == "cover":
         scale = max(w / image.width, h / image.height)

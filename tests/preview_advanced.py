@@ -40,7 +40,7 @@ def main():
             before = args.before_dir / stem.with_suffix(".png").name if args.before_dir else None
             if before and before.is_file():
                 row.append((f"{label}: before", before))
-            row.append((f"{label}: improved ({w}x{h}, min {_minimum_font(out)}px)", stem.with_suffix(".png")))
+            row.append((f"{label}: output ({w}x{h}, min {_minimum_font(out)}px)", stem.with_suffix(".png")))
             rows.append(row)
             report.append(dict(design=name, width=w, height=h, elements=len(out["elements"]),
                                minimum_rendered_font=_minimum_font(out), warnings=warnings))
@@ -48,6 +48,7 @@ def main():
     make_sheet(rows, output / "level3_comparison.png")
     (output / "report.json").write_text(json.dumps(report, indent=2))
     print(f"Previews and report: {output}")
+    print(f"Actual-size previews: {output / 'level3_comparison.html'}")
 
 
 if __name__ == "__main__":

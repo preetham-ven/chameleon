@@ -3,6 +3,11 @@ from PIL import Image, ImageDraw
 from .colorutil import parse_rgba
 
 
+def _color(value, default):
+    r, g, b, alpha = parse_rgba(value, default=default)
+    return r, g, b, round(255 * alpha)
+
+
 def render_shape(element: dict) -> Image.Image:
     """Rasterize a `shape` element to an RGBA PIL image.
 
@@ -17,29 +22,25 @@ def render_shape(element: dict) -> Image.Image:
     image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
 
-    r, g, b, _alpha = parse_rgba(element.get("fill_color"), default=(200, 200, 200, 1.0))
-    fill = (r, g, b, 255)
+    fill = _color(element.get("fill_color"), (200, 200, 200, 1.0))
+    stroke = (_color(element["stroke_color"], (0, 0, 0, 1.0))
+              if element.get("stroke_color") else None)
+    stroke_width = max(0, round(element.get("stroke_width", 0)))
+    if not stroke_width:
+        stroke = None
+    bounds = [0, 0, width - 1, height - 1]
 
     shape_type = element.get("shape_type", "rectangle")
     if shape_type == "ellipse":
-        draw.ellipse([0, 0, width - 1, height - 1], fill=fill)
+        draw.ellipse(bounds, fill=fill, outline=stroke, width=stroke_width)
     elif shape_type == "line":
-        stroke_r, stroke_g, stroke_b, _sa = parse_rgba(
-            element.get("stroke_color") or element.get("fill_color"), default=(0, 0, 0, 1.0)
-        )
-        stroke_width = max(1, round(element.get("stroke_width", 1) or 1))
-        draw.line([0, height // 2, width - 1, height // 2], fill=(stroke_r, stroke_g, stroke_b, 255), width=stroke_width)
+        stroke = _color(element.get("stroke_color") or element.get("fill_color"), (0, 0, 0, 1.0))
+        draw.line([0, height // 2, width - 1, height // 2], fill=stroke, width=max(1, stroke_width))
     else:
         radius = max(0, min(element.get("corner_radius", 0), width / 2, height / 2))
         if radius > 0:
-            draw.rounded_rectangle([0, 0, width - 1, height - 1], radius=radius, fill=fill)
+            draw.rounded_rectangle(bounds, radius=radius, fill=fill, outline=stroke, width=stroke_width)
         else:
-            draw.rectangle([0, 0, width - 1, height - 1], fill=fill)
+            draw.rectangle(bounds, fill=fill, outline=stroke, width=stroke_width)
 
     return image
-
-
-def shape_fill_alpha(element: dict) -> float:
-    """Return the alpha channel embedded in `fill_color`, e.g. `rgba(1,2,3,0.5)`."""
-    _r, _g, _b, alpha = parse_rgba(element.get("fill_color"), default=(0, 0, 0, 1.0))
-    return alpha
