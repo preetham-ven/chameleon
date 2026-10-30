@@ -305,10 +305,14 @@ def _place_button(members, elements, region, type_scale, integer_search=False):
     original_size = label["font_size"]
     natural = _measure(label).width
     pad_ratio = max(0.6, min(1.5, (bg["width"] - natural) / (2 * original_size)))
+    # Dense layouts need lettering, not the source button's excess padding.
+    vertical_padding = 0.25 if integer_search else 0.45
+    if integer_search:
+        pad_ratio = min(pad_ratio, 0.9)
     preferred = original_size * type_scale
     # Reduce padding with the font so a narrow cell can still hold its label.
-    preferred = min(preferred, w / (2 * pad_ratio + 1), h / 2.1)
-    pad_x, pad_y = preferred * pad_ratio, preferred * 0.45
+    preferred = min(preferred, w / (2 * pad_ratio + 1), h / (1.2 + 2 * vertical_padding))
+    pad_x, pad_y = preferred * pad_ratio, preferred * vertical_padding
     label.update(width=max(0, w - 2 * pad_x), height=max(0, h - 2 * pad_y))
     if "letter_spacing" in label:
         label["letter_spacing"] *= type_scale
@@ -489,6 +493,9 @@ def _valid(source, output, units):
 def layout_warnings(source, output):
     """Report best-effort limitations without changing the design schema."""
     warnings = []
+    if any(el["type"] == "text" and el["content"].strip() and int(el["font_size"]) < 8
+           for el in output["elements"]):
+        warnings.append("readability limited: text below 8px; fitting the canvas is not a visual-quality pass")
     for el in output["elements"]:
         if el["type"] == "text":
             if not _text_fits(el, el["font_size"]):
@@ -634,7 +641,7 @@ def _compact_scale(unit, elements, floor, reference):
     return preferred / smallest
 
 
-def _compact_item(unit, source, floor, reference, region, image_scale):
+def _compact_item(unit, source, floor, reference, region, image_scale, visible_images=False):
     elements = source["elements"]
     _, _, max_w, max_h = region
     short = min(max_w, max_h)
@@ -676,7 +683,14 @@ def _compact_item(unit, source, floor, reference, region, image_scale):
         else:
             missing = unit.image and not any(_image_area(elements[i]) for i in unit.indices)
             edge = short * (0.30 if missing else image_scale)
-            scale = min(edge / max(w, h, 1), max_w / max(w, 1), max_h / max(h, 1))
+            visible_edge = max(w, h, 1)
+            if visible_images and unit.image and not missing:
+                visible_edge = max(max(_visible_bounds(elements[i])[2:]) for i in unit.indices)
+            scale = edge / max(visible_edge, 1)
+            if visible_images and unit.image and not missing:
+                # Compensating logo padding should not shrink the other art.
+                scale = max(scale, short * 0.9 / max(w, h, 1))
+            scale = min(scale, max_w / max(w, 1), max_h / max(h, 1))
         w, h = w * scale, h * scale
     return _SizedUnit(unit, max(1, w), max(1, h), type_scale, members)
 
@@ -692,15 +706,16 @@ def _place_sized(items, regions, elements, dx=0, dy=0):
 
 
 def _compact_paragraphs(units, source, region, gap, floor, reference, columns):
-    """Measure blocks before balancing their ordered sequence into columns."""
+    """Compare balanced columns, demand-based widths, and a full-width footer."""
     from engine.packing import balanced_columns
     x, y, w, h = region
-    cw = (w - gap * (columns - 1)) / columns
-    if cw <= 0 or h <= 0:
+    available_w = w - gap * (columns - 1)
+    if available_w <= 0 or h <= 0:
         return None
-    def measure(unit, boost):
+
+    def measure(unit, width, height, boost):
         original = source["elements"][unit.indices[0]]
-        el = {**original, "width": cw, "height": h}
+        el = {**original, "width": width, "height": height}
         preferred = original["font_size"] * _compact_scale(unit, source["elements"], floor, reference)
         size = floor + 0.02 + boost * (preferred - floor - 0.02)
         if "letter_spacing" in el:
@@ -709,36 +724,97 @@ def _compact_paragraphs(units, source, region, gap, floor, reference, columns):
         if int(el["font_size"]) < floor or not _text_fits(el, el["font_size"]):
             return None
         height = max(_measure(el, legacy=legacy).height for legacy in (False, True))
-        return _SizedUnit(unit, cw, height, el["font_size"] / original["font_size"])
+        return _SizedUnit(unit, width, height, el["font_size"] / original["font_size"])
 
-    minimum = [measure(unit, 0) for unit in units]
-    if any(item is None for item in minimum):
+    def column_layout(copy_units, available_h, weighted):
+        if len(copy_units) < columns or available_h <= 0:
+            return None
+        cw = available_w / columns
+        minimum = [measure(unit, cw, available_h, 0) for unit in copy_units]
+        if any(item is None for item in minimum):
+            return None
+        ranges, _ = balanced_columns([item.height for item in minimum], columns, gap)
+        # Text demand includes its source prominence, not just character count.
+        weights = []
+        for start, end in ranges:
+            demand = sum(max(1, len(source["elements"][u.indices[0]]["content"]))
+                         * source["elements"][u.indices[0]]["font_size"] ** 2
+                         for u in copy_units[start:end])
+            weights.append(sqrt(demand) if weighted else 1)
+        items, regions, cx = [], [], x
+        for (start, end), weight in zip(ranges, weights):
+            cw = available_w * weight / sum(weights)
+            group = copy_units[start:end]
+            chosen = [measure(unit, cw, available_h, 0) for unit in group]
+            if (any(item is None for item in chosen)
+                    or sum(item.height for item in chosen) + gap * (len(group) - 1) > available_h + 1e-6):
+                return None
+            # Spend spare height on the most prominent source copy first.
+            # Growing every block together can leave a small heading above
+            # oversized supporting copy, or force it into a narrow column.
+            priority = sorted(range(len(group)), key=lambda i:
+                              source["elements"][group[i].indices[0]]["font_size"], reverse=True)
+            for index in priority:
+                other_height = sum(item.height for i, item in enumerate(chosen) if i != index)
+                budget = available_h - other_height - gap * (len(group) - 1)
+                trial = measure(group[index], cw, budget, 1)
+                if trial is not None:
+                    chosen[index] = trial
+            items.extend(chosen)
+            column_h = sum(item.height for item in chosen) + gap * (len(group) - 1)
+            cy = y + (available_h - column_h) / 2
+            for item in chosen:
+                regions.append((cx, cy, cw, item.height))
+                cy += item.height + gap
+            cx += cw + gap
+        return items, regions
+
+    choices = []
+    footer = None
+    last = source["elements"][units[-1].indices[0]]
+    largest = max(source["elements"][u.indices[0]]["font_size"] for u in units)
+    if len(units) > columns and last["font_size"] <= largest * 0.6:
+        footer = measure(units[-1], w, h, 0)
+    for weighted in ((False, True) if columns > 1 else (False,)):
+        plain = column_layout(units, h, weighted)
+        if plain:
+            choices.append(plain)
+        if footer:
+            split = column_layout(units[:-1], h - footer.height - gap, weighted)
+            if split:
+                split[0].append(footer)
+                split[1].append((x, y + h - footer.height, w, footer.height))
+                choices.append(split)
+    if not choices:
         return None
-    ranges, height = balanced_columns([item.height for item in minimum], columns, gap)
-    if height > h + 1e-6:
-        return None
-    items, regions = [], []
-    for col, (start, end) in enumerate(ranges):
-        chosen, low, high = minimum[start:end], 0, 1
-        for _ in range(8):
-            boost = (low + high) / 2
-            trial = [measure(unit, boost) for unit in units[start:end]]
-            if (all(item is not None for item in trial)
-                    and sum(item.height for item in trial) + gap * (end - start - 1) <= h + 1e-6):
-                chosen, low = trial, boost
-            else:
-                high = boost
-        items.extend(chosen)
-        column_h = sum(item.height for item in chosen) + gap * (end - start - 1)
-        cy = y + (h - column_h) / 2
-        for item in chosen:
-            regions.append((x + col * (cw + gap), cy, cw, item.height))
-            cy += item.height + gap
-    return items, regions
+    return max(choices, key=lambda layout: sum(
+        sqrt(source["elements"][item.unit.indices[0]]["font_size"] / reference)
+        * int(source["elements"][item.unit.indices[0]]["font_size"] * item.type_scale)
+        for item in layout[0]))
+
+
+def _compact_rank(source, output, units):
+    """Protect an 8px floor, then balance hierarchy and visible artwork size."""
+    text = [(a, b) for a, b in zip(source["elements"], output["elements"])
+            if a["type"] == "text" and a["content"].strip()]
+    reference = min((a["font_size"] for a, _ in text), default=1)
+    weights = [sqrt(a["font_size"] / reference) for a, _ in text]
+    typography = sum(weight * min(2, int(b["font_size"]) / READABLE_FONT)
+                     for weight, (_, b) in zip(weights, text)) / max(1, sum(weights))
+    artwork = [sqrt(_image_area(e)) for e in output["elements"]
+               if e["type"] == "image" and not _background(e, output["canvas"]) and _image_area(e) > 0]
+    desired = min(48, min(output["canvas"].values()) * 0.5)
+    visibility = sum(min(1, size / max(1, desired)) for size in artwork) / max(1, len(artwork))
+    largest = max((a["font_size"] for a, _ in text), default=reference)
+    primary = min((int(b["font_size"]) for a, b in text if a["font_size"] == largest), default=12)
+    primary_score = min(1, primary / (READABLE_FONT * sqrt(largest / reference)))
+    score, movement = _rank(source, output, units)
+    return (min(8, _minimum_font(output)),
+            0.30 * typography + 0.25 * primary_score + 0.20 * visibility + 0.25 * score, movement)
 
 
 def _compact_candidates(source, target, backgrounds, decorations, units, spacing=1.0):
-    """Find the largest common readable size using measured compact layouts.
+    """Compare compact layouts using measured text and visible artwork.
 
     Paragraphs occupy reading columns. Labels wrap into rows. Images and rigid
     groups pack into a side/top rail. Search depends on geometry and content
@@ -763,6 +839,7 @@ def _compact_candidates(source, target, backgrounds, decorations, units, spacing
         return []
     orientation = "side" if w >= h else "top"
     paragraph_cache = {}
+    choices, best_floor = [], None
     for floor in range(int(READABLE_FONT), 0, -1):
         feasible = []
         # Try rigid groups in the rail as well as alongside the label rows.
@@ -770,7 +847,7 @@ def _compact_candidates(source, target, backgrounds, decorations, units, spacing
             rail_units = images + (rigid if rigid_in_rail else [])
             row_units = labels + ([] if rigid_in_rail else rigid)
             row_units.sort(key=lambda u: (u.bounds[1], u.bounds[0]))
-            fractions = (0.18, 0.28, 0.38) if rail_units else (0,)
+            fractions = (0.18, 0.28, 0.34, 0.38, 0.42) if rail_units else (0,)
             for fraction in fractions:
                 for reverse in ((False, True) if rail_units else (False,)):
                     rail, body = (0, 0, w, h), (margin, margin, w, h)
@@ -783,8 +860,10 @@ def _compact_candidates(source, target, backgrounds, decorations, units, spacing
                         rail = (margin, margin + (h - rh if reverse else 0), w, rh)
                         body = (margin, margin + (0 if reverse else rh + gap), w, h - rh - gap)
                     bx, by, bw, bh = body
-                    for image_scale in ((0.9, 0.65) if images else (0.9,)):
-                        rail_items = [_compact_item(u, source, floor, reference, rail, image_scale) for u in rail_units]
+                    image_options = (((0.9, False), (0.65, False), (0.9, True),
+                                      (0.65, True), (0.5, True)) if images else ((0.9, False),))
+                    for image_scale, visible_images in image_options:
+                        rail_items = [_compact_item(u, source, floor, reference, rail, image_scale, visible_images) for u in rail_units]
                         row_items = [_compact_item(u, source, floor, reference, body, image_scale) for u in row_units]
                         rows = flow_rows([(i.width, i.height) for i in row_items], bw, gap)
                         if rows is None:
@@ -816,8 +895,14 @@ def _compact_candidates(source, target, backgrounds, decorations, units, spacing
                                 if _minimum_font(output) >= floor and _valid(source, output, units):
                                     feasible.append(output)
         if feasible:
-            return feasible  # Lower floors cannot beat this floor's minimum size.
-    return []
+            choices.extend(feasible)
+            if best_floor is None:
+                best_floor = floor
+        # Above 8px, compare one lower floor to allow a small text-size trade
+        # for a clearer headline or larger artwork. Never trade below 8px.
+        if best_floor is not None and floor <= max(8, best_floor - 1):
+            return choices
+    return choices
 
 
 def resize(source: dict[str, Any], target_canvas: dict[str, Any]) -> dict[str, Any]:
@@ -864,7 +949,7 @@ def resize(source: dict[str, Any], target_canvas: dict[str, Any]) -> dict[str, A
             compact.extend(_compact_candidates(source, target_canvas, backgrounds, decorations, units, spacing))
         if compact:
             best = max(([best] if best else []) + compact,
-                       key=lambda output: (_minimum_font(output), _rank(source, output, units)))
+                       key=lambda output: _compact_rank(source, output, units))
     if best is not None:
         return best
     # Best-effort fallback preserves every unit even for infeasible tiny targets.

@@ -7,7 +7,8 @@ import unittest
 from unittest.mock import patch
 
 from engine.packing import balanced_columns, flow_rows, pack_rectangles
-from engine.resize import _minimum_font, resize
+from engine.quality import assess_quality
+from engine.resize import _minimum_font, layout_warnings, resize
 from tests import test_resize as checks
 from tests.advanced_cases import EXTREME_TARGETS, advanced_design, awkward_design, image_collection
 
@@ -65,6 +66,53 @@ class AdvancedResizeTests(unittest.TestCase):
         self.assertTrue(all(e["rotation"] == -12 for e in ribbon))
         missing = next(e for e in out["elements"] if e["id"] == "holiday_watermark")
         self.assertEqual(missing["asset_id"], "solstice_holiday_badge_2025.png")
+
+    def test_sample_keeps_hierarchy_and_visible_branding(self):
+        from renderer.converter.assets import load_asset_image
+        task = checks.task(3)
+        out = resize(task["source"], task["target_canvas"])
+        quality = assess_quality(task["source"], out)
+        self.assertGreaterEqual(quality["minimum_rendered_font"], 8)
+        self.assertGreaterEqual(quality["primary_text_font"], 12)
+        self.assertEqual(quality["readability"], "small_text")
+        # Measure rasterized alpha independently of engine visibility scores.
+        for identifier, min_width, min_height in [("logo", 50, 28), ("product", 32, 53)]:
+            el = next(e for e in out["elements"] if e["id"] == identifier)
+            pixels = load_asset_image(str(ROOT / "brand_kit/assets"), el["asset_id"],
+                                      el["width"], el["height"], el.get("fit", "contain"))
+            left, top, right, bottom = pixels.getchannel("A").point(lambda a: 255 if a >= 8 else 0).getbbox()
+            self.assertGreaterEqual(right - left, min_width, identifier)
+            self.assertGreaterEqual(bottom - top, min_height, identifier)
+
+    def test_tiny_copy_is_flagged_as_a_quality_failure_even_when_it_fits(self):
+        source = awkward_design()
+        out = resize(source, dict(width=90, height=728))
+        self.assert_contract(source, out)
+        quality = assess_quality(source, out)
+        self.assertEqual(quality["readability"], "too_small")
+        self.assertTrue(quality["text_below_8px"])
+        self.assertTrue(any("readability limited" in warning for warning in layout_warnings(source, out)))
+
+    def test_independent_dense_copy_keeps_a_prominent_heading(self):
+        source = advanced_design()
+        for width, height in [(970, 90), (300, 250)]:
+            with self.subTest(target=(width, height)):
+                out = resize(source, dict(width=width, height=height))
+                self.assert_contract(source, out)
+                quality = assess_quality(source, out)
+                self.assertGreaterEqual(quality["minimum_rendered_font"], 8)
+                self.assertGreaterEqual(quality["primary_text_font"], 12)
+
+    def test_readability_status_is_distinct_from_missing_assets(self):
+        source = checks.task(1)["source"]
+        out = resize(source, dict(width=1080, height=1350))
+        quality = assess_quality(source, out)
+        self.assertEqual(quality["readability"], "meets_font_floor")
+        self.assertEqual(quality["text_below_12px"], [])
+        image = next(e for e in out["elements"] if e["type"] == "image" and e["id"] != "bg")
+        image["asset_id"] = "absent-quality-test.png"
+        quality = assess_quality(source, out)
+        self.assertFalse(next(i for i in quality["images"] if i["id"] == image["id"])["asset_available"])
 
     def test_narrow_sample_does_not_shrink_already_fitting_text(self):
         task = checks.task(3)

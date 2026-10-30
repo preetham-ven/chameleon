@@ -25,6 +25,7 @@ Both the JSON and the PNG are what get evaluated — see `RULES.md`.
 engine/
   resize.py        <- layout selection, placement, and font fitting
   packing.py       <- rectangle packing, label rows, and balanced columns
+  quality.py       <- native-size readability and visible-artwork diagnostics
   main.py           <- orchestrator (input -> resize() -> output). Don't need to edit this.
 renderer/           <- the real renderer (transformer-convertor + cr-renderer), already vendored
 brand_kit/
@@ -86,9 +87,20 @@ or top rail. Simple rotated rectangle-and-label groups can lose excess padding
 while keeping their original angle. Complex groups still scale uniformly.
 Image-only designs can use an adaptive row/grid rather than a fixed column count.
 
-The compact search checks integer readability floors from 12 px down to 1 px,
-preferring the largest minimum **rendered** text size found by its layouts,
-then applying the usual design-quality score. Missing image references survive
+Column widths also follow copy length and source font prominence. Small final
+paragraphs can span a full-width footer instead of consuming a reading column.
+Spare text space goes to the most prominent source copy first, instead of
+enlarging every paragraph together. Dense buttons use tighter padding.
+Image sizing tries both the full source box
+and the visible alpha bounds, so transparent padding does not automatically
+make branding tiny; the complete asset remains uncropped and on-canvas.
+
+The compact search checks integer readability floors from 12 px down to 1 px.
+When the best floor is above 8 px, it also compares one lower floor, allowing
+at most a 1 px trade for clearer primary text and larger visible artwork.
+It never makes that trade below 8 px. If no layout reaches 8 px, it keeps the
+largest floor it found and reports the readability limit. Primary text is
+inferred from source font sizes, not element IDs. Missing image references survive
 and render through the existing placeholder behavior, but receive no image-
 prominence reward. No text, elements, or assets are dropped or rewritten.
 Very small canvases with long copy still require small text; warnings report
@@ -129,7 +141,11 @@ open output/level3_review/level3_comparison.html
 ```
 
 `output/level3_review/report.json` records element counts, minimum rendered font
-sizes, and warnings. The regression suite also covers variable badge counts,
+sizes, and warnings. Its `quality` field distinguishes `too_small` (below 8 px),
+`small_text` (8–11 px), and `meets_font_floor` (12 px or larger). It also records
+primary text size and visible artwork dimensions. These are local diagnostics:
+meeting a font floor is not a guarantee of visual quality. The regression suite
+also covers variable badge counts,
 larger image collections, unchanged copy, rigid groups, and actual rendered text
 under both the corrected and original converter behavior.
 

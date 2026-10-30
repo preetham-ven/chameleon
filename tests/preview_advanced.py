@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from engine.resize import _minimum_font, layout_warnings, resize
+from engine.quality import assess_quality
 from renderer.converter.convert import render_design_to_png
 from tests.advanced_cases import advanced_design, awkward_design
 from tests.preview_layouts import ROOT, make_sheet
@@ -36,15 +37,16 @@ def main():
             stem.with_suffix(".json").write_text(json.dumps(out, indent=2))
             warnings = render_design_to_png(out, ROOT / "brand_kit/assets", stem.with_suffix(".png"))
             warnings += layout_warnings(source, out)
+            quality = assess_quality(source, out)
             row = [(f"{name}: source", source_png)]
             before = args.before_dir / stem.with_suffix(".png").name if args.before_dir else None
             if before and before.is_file():
                 row.append((f"{label}: before", before))
-            row.append((f"{label}: output ({w}x{h}, min {_minimum_font(out)}px)", stem.with_suffix(".png")))
+            row.append((f"{label}: {quality['readability']} ({w}x{h}, min {_minimum_font(out)}px)", stem.with_suffix(".png")))
             rows.append(row)
             report.append(dict(design=name, width=w, height=h, elements=len(out["elements"]),
-                               minimum_rendered_font=_minimum_font(out), warnings=warnings))
-            print(f"{name}/{label}: min {_minimum_font(out)}px, {len(warnings)} warning(s)")
+                               minimum_rendered_font=_minimum_font(out), quality=quality, warnings=warnings))
+            print(f"{name}/{label}: {quality['readability']}, min {_minimum_font(out)}px, {len(warnings)} warning(s)", flush=True)
     make_sheet(rows, output / "level3_comparison.png")
     (output / "report.json").write_text(json.dumps(report, indent=2))
     print(f"Previews and report: {output}")
